@@ -54,7 +54,8 @@ def initialize_handlers():
     _verification_handler = QQVerificationHandler(_ws_client)
     _paper_handler = PaperSubmissionHandler(_ws_client)
     _group_handler = GroupJoinHandler(
-        _ws_client, _verification_handler, _paper_handler
+        _ws_client, _verification_handler, _paper_handler,
+        set(_config.allowed_join_groups) if _config.allowed_join_groups else None
     )
 
     # Register WebSocket message handlers

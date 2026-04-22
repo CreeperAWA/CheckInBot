@@ -17,3 +17,6 @@ verify_timeout: 3
 
 # Allowed rating IDs for automatic approval
 allowed_rating_ids: []
+
+# Group IDs allowed to process join requests (empty = allow all)
+allowed_join_groups: []

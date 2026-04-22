@@ -1,6 +1,6 @@
 """Bot configuration model and loader."""
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 from loguru import logger
@@ -22,6 +22,7 @@ class BotConfig(BaseModel):
     group_list: List[int] = Field(default_factory=lambda: [640265417, 1032389222])
     verify_timeout: int = 3
     allowed_rating_ids: List[str] = Field(default_factory=list)
+    allowed_join_groups: List[int] = Field(default_factory=list)
 
 
 def load_config(config_path: str = None) -> BotConfig:

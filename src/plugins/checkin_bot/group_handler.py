@@ -29,12 +29,14 @@ class GroupJoinHandler:
         self,
         ws_client: WebSocketClient,
         verification_handler: QQVerificationHandler,
-        paper_handler: PaperSubmissionHandler
+        paper_handler: PaperSubmissionHandler,
+        allowed_groups: Optional[set] = None
     ):
         self.ws_client = ws_client
         self.verification_handler = verification_handler
         self.paper_handler = paper_handler
         self._pending_requests: Dict[str, PendingJoinRequest] = {}
+        self.allowed_groups: set = allowed_groups or set()
 
     async def handle_group_join(
         self,
@@ -46,16 +48,22 @@ class GroupJoinHandler:
         """Handle a new group join request.
 
         Logic:
-        1. Check if active verification exists for this QQ
+        1. Check if the group is in allowed groups (if configured)
+        2. Check if active verification exists for this QQ
            - If yes, verify comment against verify_content
            - Send success/failed response to server
            - Approve or reject based on verification result
-        2. If no active verification, check if paper submission data exists
+        3. If no active verification, check if paper submission data exists
            - If yes, use rating_id to determine action
-        3. If neither, query server for user records to check rating
+        4. If neither, query server for user records to check rating
         """
         qq = str(user_id)
         logger.info(f"Group join request: group={group_id}, user={qq}, comment={comment}")
+
+        # Step 0: Check if this group is allowed
+        if self.allowed_groups and group_id not in self.allowed_groups:
+            logger.info(f"Ignoring join request for group {group_id}: not in allowed groups")
+            return
 
         # Step 1: Check for active verification
         if self.verification_handler.has_active_verification(qq):
