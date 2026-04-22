@@ -1,0 +1,19 @@
+# Bot Configuration File
+# WebSocket Server Settings
+server:
+  host: "localhost"
+  port: 8080
+  protocol: "ws"  # ws or wss
+  sid: ""  # Bot unique identifier (UUID)
+  jwt_token: ""  # JWT token for authentication
+
+# Group chat list to monitor (QQ group IDs)
+group_list:
+  - 640265417
+  - 1032389222
+
+# QQ verification timeout (in minutes)
+verify_timeout: 3
+
+# Allowed rating IDs for automatic approval
+allowed_rating_ids: []

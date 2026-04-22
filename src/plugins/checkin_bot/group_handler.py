@@ -1,0 +1,225 @@
+"""Group join request handler."""
+import asyncio
+import time
+from typing import Dict, Optional
+
+from loguru import logger
+from nonebot.adapters.onebot.v11 import Bot
+
+from .paper_handler import PaperSubmissionHandler
+from .verification_handler import QQVerificationHandler
+from .websocket_client import WebSocketClient
+
+
+class PendingJoinRequest:
+    """Stores a pending group join request."""
+
+    def __init__(self, group_id: int, user_id: int, comment: str):
+        self.group_id = group_id
+        self.user_id = user_id
+        self.comment = comment
+        self.timestamp = time.time()
+        self.paper_data: Optional[Dict] = None
+
+
+class GroupJoinHandler:
+    """Handles group join requests and determines approval/rejection."""
+
+    def __init__(
+        self,
+        ws_client: WebSocketClient,
+        verification_handler: QQVerificationHandler,
+        paper_handler: PaperSubmissionHandler
+    ):
+        self.ws_client = ws_client
+        self.verification_handler = verification_handler
+        self.paper_handler = paper_handler
+        self._pending_requests: Dict[str, PendingJoinRequest] = {}
+
+    async def handle_group_join(
+        self,
+        bot: Bot,
+        group_id: int,
+        user_id: int,
+        comment: str = ""
+    ):
+        """Handle a new group join request.
+
+        Logic:
+        1. Check if active verification exists for this QQ
+           - If yes, verify comment against verify_content
+           - Send success/failed response to server
+           - Approve or reject based on verification result
+        2. If no active verification, check if paper submission data exists
+           - If yes, use rating_id to determine action
+        3. If neither, query server for user records to check rating
+        """
+        qq = str(user_id)
+        logger.info(f"Group join request: group={group_id}, user={qq}, comment={comment}")
+
+        # Step 1: Check for active verification
+        if self.verification_handler.has_active_verification(qq):
+            await self._handle_verification_join(bot, group_id, user_id, qq, comment)
+            return
+
+        # Step 2: Check for stored paper submission data
+        paper_data = self.paper_handler.get_paper_data(qq)
+        if paper_data:
+            await self._handle_paper_join(bot, group_id, user_id, qq, paper_data)
+            return
+
+        # Step 3: Query server for user records
+        await self._handle_query_join(bot, group_id, user_id, qq)
+
+    async def _handle_verification_join(
+        self,
+        bot: Bot,
+        group_id: int,
+        user_id: int,
+        qq: str,
+        comment: str
+    ):
+        """Handle join based on active verification."""
+        result = await self.verification_handler.check_join_request(bot, qq, comment)
+
+        if result == "success":
+            logger.info(f"Approving join for {qq}: verification passed")
+            await self._approve_join(bot, group_id, user_id)
+            await self.verification_handler.send_verify_response(
+                qq,
+                self.verification_handler.get_verify_message_id(qq) or "",
+                "success"
+            )
+        elif result == "failed":
+            logger.info(f"Rejecting join for {qq}: verification failed")
+            await self._reject_join(bot, group_id, user_id)
+            await self.verification_handler.send_verify_response(
+                qq,
+                self.verification_handler.get_verify_message_id(qq) or "",
+                "failed"
+            )
+        else:
+            logger.warning(f"No active verification for {qq}, falling back to rating check")
+            await self._handle_query_join(bot, group_id, user_id, qq)
+
+    async def _handle_paper_join(
+        self,
+        bot: Bot,
+        group_id: int,
+        user_id: int,
+        qq: str,
+        paper_data: dict
+    ):
+        """Handle join based on paper submission data."""
+        rating_id = paper_data.get("rating_id", "")
+        answer_count = paper_data.get("answer_count", 0)
+        max_answer_count = paper_data.get("max_answer_count", 0)
+
+        if self.paper_handler.should_approve_join(rating_id):
+            logger.info(f"Approving join for {qq}: rating {rating_id} allowed")
+            await self._approve_join(bot, group_id, user_id)
+        elif self.paper_handler.should_reject_join(rating_id, answer_count, max_answer_count):
+            logger.info(f"Rejecting join for {qq}: max attempts reached")
+            await self._reject_join(bot, group_id, user_id)
+        else:
+            logger.info(f"No action for join {qq}")
+
+    async def _handle_query_join(
+        self,
+        bot: Bot,
+        group_id: int,
+        user_id: int,
+        qq: str
+    ):
+        """Handle join by querying server for user records."""
+        try:
+            # Store pending request
+            pending = PendingJoinRequest(group_id, user_id, "")
+            self._pending_requests[qq] = pending
+
+            # Send exam records query
+            query_message = {
+                "type": "exam_records_query",
+                "messageId": str(int(time.time() * 1000)),
+                "data": {"qq": qq}
+            }
+            await self.ws_client.send_message(query_message)
+
+            # Cleanup after timeout
+            asyncio.create_task(self._cleanup_pending_request(qq))
+
+            logger.info(f"Queried exam records for {qq}")
+        except Exception as e:
+            logger.error(f"Error querying exam records for {qq}: {e}")
+            await self._reject_join(bot, group_id, user_id)
+
+    async def process_exam_records_response(self, data: dict):
+        """Process exam records response from server."""
+        query_data = data.get("data", {})
+        qq = query_data.get("qq", "")
+        records = query_data.get("records", [])
+
+        pending = self._pending_requests.pop(qq, None)
+        if not pending:
+            logger.debug(f"No pending join request for {qq}")
+            return
+
+        bot = None  # Bot reference may not be available here
+        group_id = pending.group_id
+        user_id = pending.user_id
+
+        if not records:
+            logger.info(f"No exam records for {qq}, rejecting join")
+            await self._reject_join(bot, group_id, user_id)
+            return
+
+        # Get most recent record
+        latest_record = records[0]
+        rating_id = latest_record.get("rating_id", "")
+
+        logger.info(f"Latest record for {qq}: rating={rating_id}")
+
+        if self.paper_handler.should_approve_join(rating_id):
+            await self._approve_join(bot, group_id, user_id)
+        else:
+            await self._reject_join(bot, group_id, user_id)
+
+    async def _approve_join(self, bot: Optional[Bot], group_id: int, user_id: int):
+        """Approve a group join request."""
+        try:
+            if bot:
+                await bot.set_group_add_request(
+                    flag=str(group_id),
+                    sub_type="invite",
+                    approve=True
+                )
+            logger.info(f"Approved group join: group={group_id}, user={user_id}")
+        except Exception as e:
+            logger.error(f"Failed to approve join for {user_id}: {e}")
+
+    async def _reject_join(self, bot: Optional[Bot], group_id: int, user_id: int):
+        """Reject a group join request."""
+        try:
+            if bot:
+                await bot.set_group_add_request(
+                    flag=str(group_id),
+                    sub_type="invite",
+                    approve=False
+                )
+            logger.info(f"Rejected group join: group={group_id}, user={user_id}")
+        except Exception as e:
+            logger.error(f"Failed to reject join for {user_id}: {e}")
+
+    def update_paper_submission(self, paper_data: dict):
+        """Update paper submission data for future join decisions."""
+        qq = paper_data.get("qq", "")
+        if qq:
+            self.paper_handler.set_paper_data(qq, paper_data)
+            logger.info(f"Updated paper submission data for {qq}")
+
+    async def _cleanup_pending_request(self, qq: str):
+        """Clean up pending join request after timeout."""
+        await asyncio.sleep(30)
+        if qq in self._pending_requests:
+            del self._pending_requests[qq]
+            logger.debug(f"Cleaned up pending join request for {qq}")
