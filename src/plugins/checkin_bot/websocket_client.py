@@ -22,7 +22,6 @@ class WebSocketClient:
         self._reconnect_delay = 5
         self._max_reconnect_delay = 300
         self._pending_verifications: Dict[str, dict] = {}
-        self._pending_paper_submissions: Dict[str, dict] = {}
 
     def register_handler(self, message_type: str, handler: Callable):
         """Register a handler for a specific message type."""
@@ -35,7 +34,8 @@ class WebSocketClient:
     @property
     def ws_url(self) -> str:
         """Get WebSocket URL."""
-        return f"{self.config.server.protocol}://{self.config.server.host}:{self.config.server.port}/api/websocket/thirdParty/{self.config.server.sid}"
+        protocol = "wss" if self.config.server.protocol == "wss" else "ws"
+        return f"{protocol}://{self.config.server.host}:{self.config.server.port}/checkIn/api/websocket/thirdParty/{self.config.server.sid}"
 
     async def connect(self):
         """Establish WebSocket connection."""
@@ -43,15 +43,17 @@ class WebSocketClient:
         while self.running:
             try:
                 logger.info(f"Connecting to server: {self.ws_url}")
-                async with websockets.connect(self.ws_url) as ws:
+                async with websockets.connect(
+                    self.ws_url,
+                    ping_interval=30,
+                    ping_timeout=10
+                ) as ws:
                     self.ws = ws
                     self._reconnect_delay = 5
-                    logger.info("Connected to server")
+                    logger.info("WebSocket connection established")
 
-                    # Send authentication
                     await self._authenticate()
 
-                    # Start message loop
                     await self._message_loop()
             except websockets.exceptions.ConnectionClosed as e:
                 logger.warning(f"Connection closed: {e}")
@@ -70,7 +72,6 @@ class WebSocketClient:
         await self.ws.send(json.dumps(auth_message))
         logger.info("Authentication message sent")
 
-        # Wait for auth response
         response = await self.ws.recv()
         response_data = json.loads(response)
         if response_data.get("type") == "success":
@@ -84,7 +85,9 @@ class WebSocketClient:
             async for message in self.ws:
                 try:
                     data = json.loads(message)
-                    logger.debug(f"Received message: {data.get('type', 'unknown')}")
+                    msg_type = data.get("type", "unknown")
+                    message_id = data.get("messageId", "")
+                    logger.debug(f"Received message: type={msg_type}, messageId={message_id}")
                     await self._handle_message(data)
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON message: {e}")
@@ -106,9 +109,12 @@ class WebSocketClient:
 
     async def send_message(self, message: dict):
         """Send a message to the server."""
-        if self.ws and self.ws.open:
-            await self.ws.send(json.dumps(message))
-            logger.debug(f"Message sent: {message.get('type')}")
+        if self.ws:
+            try:
+                await self.ws.send(json.dumps(message, ensure_ascii=False))
+                logger.debug(f"Message sent: type={message.get('type')}")
+            except Exception as e:
+                logger.error(f"Failed to send message: {e}")
         else:
             logger.error("WebSocket not connected, cannot send message")
 
@@ -117,16 +123,19 @@ class WebSocketClient:
         if not self.running:
             return
 
-        logger.info(f"Reconnecting in {self._reconnect_delay} seconds...")
-        await asyncio.sleep(self._reconnect_delay)
+        delay = self._reconnect_delay
+        logger.info(f"Reconnecting in {delay} seconds...")
+        await asyncio.sleep(delay)
 
-        # Exponential backoff: 5s -> 10s -> 1min -> 5min -> 5min...
         if self._reconnect_delay == 5:
             self._reconnect_delay = 10
         elif self._reconnect_delay == 10:
             self._reconnect_delay = 60
         else:
-            self._reconnect_delay = min(self._reconnect_delay * 5, self._max_reconnect_delay)
+            self._reconnect_delay = min(
+                self._reconnect_delay + 240,
+                self._max_reconnect_delay
+            )
 
     async def disconnect(self):
         """Disconnect from server."""
