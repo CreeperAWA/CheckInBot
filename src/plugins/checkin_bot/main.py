@@ -164,6 +164,7 @@ async def handle_group_request(bot: Bot, event: GroupRequestEvent):
                 event.group_id,
                 event.user_id,
                 event.comment or "",
+                event.flag or "",
             )
 
 

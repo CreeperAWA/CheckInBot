@@ -14,10 +14,11 @@ from .websocket_client import WebSocketClient
 class PendingJoinRequest:
     """Stores a pending group join request."""
 
-    def __init__(self, group_id: int, user_id: int, comment: str):
+    def __init__(self, group_id: int, user_id: int, comment: str, flag: str = ""):
         self.group_id = group_id
         self.user_id = user_id
         self.comment = comment
+        self.flag = flag
         self.timestamp = time.time()
         self.paper_data: Optional[Dict] = None
 
@@ -43,7 +44,8 @@ class GroupJoinHandler:
         bot: Bot,
         group_id: int,
         user_id: int,
-        comment: str = ""
+        comment: str = "",
+        flag: str = ""
     ):
         """Handle a new group join request.
 
@@ -58,7 +60,7 @@ class GroupJoinHandler:
         4. If neither, query server for user records to check rating
         """
         qq = str(user_id)
-        logger.info(f"Group join request: group={group_id}, user={qq}, comment={comment}")
+        logger.info(f"Group join request: group={group_id}, user={qq}, comment={comment}, flag={flag}")
 
         # Step 0: Check if this group is allowed
         if self.allowed_groups and group_id not in self.allowed_groups:
@@ -67,17 +69,17 @@ class GroupJoinHandler:
 
         # Step 1: Check for active verification
         if self.verification_handler.has_active_verification(qq):
-            await self._handle_verification_join(bot, group_id, user_id, qq, comment)
+            await self._handle_verification_join(bot, group_id, user_id, qq, comment, flag)
             return
 
         # Step 2: Check for stored paper submission data
         paper_data = self.paper_handler.get_paper_data(qq)
         if paper_data:
-            await self._handle_paper_join(bot, group_id, user_id, qq, paper_data)
+            await self._handle_paper_join(bot, group_id, user_id, qq, paper_data, flag)
             return
 
         # Step 3: Query server for user records
-        await self._handle_query_join(bot, group_id, user_id, qq)
+        await self._handle_query_join(bot, group_id, user_id, qq, flag)
 
     async def _handle_verification_join(
         self,
@@ -85,14 +87,15 @@ class GroupJoinHandler:
         group_id: int,
         user_id: int,
         qq: str,
-        comment: str
+        comment: str,
+        flag: str
     ):
         """Handle join based on active verification."""
         result = await self.verification_handler.check_join_request(bot, qq, comment)
 
         if result == "success":
             logger.info(f"Approving join for {qq}: verification passed")
-            await self._approve_join(bot, group_id, user_id)
+            await self._approve_join(bot, flag, user_id)
             await self.verification_handler.send_verify_response(
                 qq,
                 self.verification_handler.get_verify_message_id(qq) or "",
@@ -100,7 +103,7 @@ class GroupJoinHandler:
             )
         elif result == "failed":
             logger.info(f"Rejecting join for {qq}: verification failed")
-            await self._reject_join(bot, group_id, user_id)
+            await self._reject_join(bot, flag, user_id)
             await self.verification_handler.send_verify_response(
                 qq,
                 self.verification_handler.get_verify_message_id(qq) or "",
@@ -108,7 +111,7 @@ class GroupJoinHandler:
             )
         else:
             logger.warning(f"No active verification for {qq}, falling back to rating check")
-            await self._handle_query_join(bot, group_id, user_id, qq)
+            await self._handle_query_join(bot, group_id, user_id, qq, flag)
 
     async def _handle_paper_join(
         self,
@@ -116,7 +119,8 @@ class GroupJoinHandler:
         group_id: int,
         user_id: int,
         qq: str,
-        paper_data: dict
+        paper_data: dict,
+        flag: str
     ):
         """Handle join based on paper submission data."""
         rating_id = paper_data.get("rating_id", "")
@@ -125,10 +129,10 @@ class GroupJoinHandler:
 
         if self.paper_handler.should_approve_join(rating_id):
             logger.info(f"Approving join for {qq}: rating {rating_id} allowed")
-            await self._approve_join(bot, group_id, user_id)
+            await self._approve_join(bot, flag, user_id)
         elif self.paper_handler.should_reject_join(rating_id, answer_count, max_answer_count):
             logger.info(f"Rejecting join for {qq}: max attempts reached")
-            await self._reject_join(bot, group_id, user_id)
+            await self._reject_join(bot, flag, user_id)
         else:
             logger.info(f"No action for join {qq}")
 
@@ -137,12 +141,13 @@ class GroupJoinHandler:
         bot: Bot,
         group_id: int,
         user_id: int,
-        qq: str
+        qq: str,
+        flag: str
     ):
         """Handle join by querying server for user records."""
         try:
             # Store pending request
-            pending = PendingJoinRequest(group_id, user_id, "")
+            pending = PendingJoinRequest(group_id, user_id, "", flag)
             self._pending_requests[qq] = pending
 
             # Send exam records query
@@ -159,7 +164,7 @@ class GroupJoinHandler:
             logger.info(f"Queried exam records for {qq}")
         except Exception as e:
             logger.error(f"Error querying exam records for {qq}: {e}")
-            await self._reject_join(bot, group_id, user_id)
+            await self._reject_join(bot, flag, user_id)
 
     async def process_exam_records_response(self, data: dict):
         """Process exam records response from server."""
@@ -173,12 +178,12 @@ class GroupJoinHandler:
             return
 
         bot = None  # Bot reference may not be available here
-        group_id = pending.group_id
+        flag = pending.flag
         user_id = pending.user_id
 
         if not records:
             logger.info(f"No exam records for {qq}, rejecting join")
-            await self._reject_join(bot, group_id, user_id)
+            await self._reject_join(bot, flag, user_id)
             return
 
         # Get most recent record
@@ -188,33 +193,33 @@ class GroupJoinHandler:
         logger.info(f"Latest record for {qq}: rating={rating_id}")
 
         if self.paper_handler.should_approve_join(rating_id):
-            await self._approve_join(bot, group_id, user_id)
+            await self._approve_join(bot, flag, user_id)
         else:
-            await self._reject_join(bot, group_id, user_id)
+            await self._reject_join(bot, flag, user_id)
 
-    async def _approve_join(self, bot: Optional[Bot], group_id: int, user_id: int):
+    async def _approve_join(self, bot: Optional[Bot], flag: str, user_id: int):
         """Approve a group join request."""
         try:
-            if bot:
+            if bot and flag:
                 await bot.set_group_add_request(
-                    flag=str(group_id),
+                    flag=flag,
                     sub_type="invite",
                     approve=True
                 )
-            logger.info(f"Approved group join: group={group_id}, user={user_id}")
+            logger.info(f"Approved group join: flag={flag}, user={user_id}")
         except Exception as e:
             logger.error(f"Failed to approve join for {user_id}: {e}")
 
-    async def _reject_join(self, bot: Optional[Bot], group_id: int, user_id: int):
+    async def _reject_join(self, bot: Optional[Bot], flag: str, user_id: int):
         """Reject a group join request."""
         try:
-            if bot:
+            if bot and flag:
                 await bot.set_group_add_request(
-                    flag=str(group_id),
+                    flag=flag,
                     sub_type="invite",
                     approve=False
                 )
-            logger.info(f"Rejected group join: group={group_id}, user={user_id}")
+            logger.info(f"Rejected group join: flag={flag}, user={user_id}")
         except Exception as e:
             logger.error(f"Failed to reject join for {user_id}: {e}")
 

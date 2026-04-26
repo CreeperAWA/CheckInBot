@@ -116,15 +116,15 @@ class QQVerificationHandler:
         """Check if a group join request matches an active verification.
 
         Returns:
-            "success" - join comment matches verification content
-            "failed" - join comment doesn't match
+            "success" - join comment contains verification content
+            "failed" - join comment doesn't contain verification content
             None - no active verification for this QQ
         """
         record = self._active_verifications.get(qq)
         if not record or record.completed:
             return None
 
-        if join_comment == record.verify_content:
+        if record.verify_content in join_comment:
             record.completed = True
             record.result = "success"
             logger.info(f"Verification SUCCESS for QQ {qq}")
