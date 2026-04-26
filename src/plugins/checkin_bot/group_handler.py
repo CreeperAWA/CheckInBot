@@ -110,8 +110,7 @@ class GroupJoinHandler:
                 "failed"
             )
         else:
-            logger.warning(f"No active verification for {qq}, falling back to rating check")
-            await self._handle_query_join(bot, group_id, user_id, qq, flag)
+            logger.info(f"No action for join {qq}: active verification exists but comment not matched yet")
 
     async def _handle_paper_join(
         self,
