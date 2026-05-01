@@ -9,6 +9,7 @@ from nonebot.adapters.onebot.v11 import Bot
 from .paper_handler import PaperSubmissionHandler
 from .verification_handler import QQVerificationHandler
 from .websocket_client import WebSocketClient
+from .welcome_handler import WelcomeMessageHandler
 
 
 class PendingJoinRequest:
@@ -31,11 +32,13 @@ class GroupJoinHandler:
         ws_client: WebSocketClient,
         verification_handler: QQVerificationHandler,
         paper_handler: PaperSubmissionHandler,
-        allowed_groups: Optional[set] = None
+        allowed_groups: Optional[set] = None,
+        welcome_handler: Optional[WelcomeMessageHandler] = None
     ):
         self.ws_client = ws_client
         self.verification_handler = verification_handler
         self.paper_handler = paper_handler
+        self.welcome_handler = welcome_handler
         self._pending_requests: Dict[str, PendingJoinRequest] = {}
         self.allowed_groups: set = allowed_groups or set()
 
@@ -101,6 +104,9 @@ class GroupJoinHandler:
                 self.verification_handler.get_verify_message_id(qq) or "",
                 "success"
             )
+            paper_data = self.paper_handler.get_paper_data(qq)
+            if paper_data:
+                await self._send_welcome_if_enabled(bot, group_id, paper_data)
             self.paper_handler.clear_paper_data(qq)
         elif result == "failed":
             logger.info(f"Rejecting join for {qq}: verification failed")
@@ -128,6 +134,7 @@ class GroupJoinHandler:
         if self.paper_handler.should_approve_join(rating_id):
             logger.info(f"Approving join for {qq}: rating {rating_id} allowed")
             await self._approve_join(bot, flag, user_id)
+            await self._send_welcome_if_enabled(bot, group_id, paper_data)
             self.paper_handler.clear_paper_data(qq)
         elif self.paper_handler.should_reject_join(rating_id, answer_count, max_answer_count):
             logger.info(f"Rejecting join for {qq}: max attempts reached")
@@ -179,6 +186,7 @@ class GroupJoinHandler:
         bot = None  # Bot reference may not be available here
         flag = pending.flag
         user_id = pending.user_id
+        group_id = pending.group_id
 
         if not records:
             logger.info(f"No exam records for {qq}, rejecting join")
@@ -193,6 +201,15 @@ class GroupJoinHandler:
 
         if self.paper_handler.should_approve_join(rating_id):
             await self._approve_join(bot, flag, user_id)
+            paper_data_for_welcome = {
+                "paper_id": latest_record.get("paper_id", ""),
+                "generate_time": latest_record.get("generate_time"),
+                "submit_time": latest_record.get("submit_time"),
+                "score": latest_record.get("score"),
+                "answer_count": 0,
+                "rating_id": rating_id,
+            }
+            await self._send_welcome_if_enabled(bot, group_id, paper_data_for_welcome)
         else:
             await self._reject_join(bot, flag, user_id)
 
@@ -228,6 +245,20 @@ class GroupJoinHandler:
         if qq:
             self.paper_handler.set_paper_data(qq, paper_data)
             logger.info(f"Updated paper submission data for {qq}")
+
+    async def _send_welcome_if_enabled(
+        self,
+        bot: Optional[Bot],
+        group_id: int,
+        paper_data: dict
+    ):
+        """Send welcome message if the feature is enabled."""
+        if not self.welcome_handler or not bot:
+            return
+        try:
+            await self.welcome_handler.send_welcome_message(bot, group_id, paper_data)
+        except Exception as e:
+            logger.error(f"Error sending welcome message: {e}")
 
     async def _cleanup_pending_request(self, qq: str):
         """Clean up pending join request after timeout."""

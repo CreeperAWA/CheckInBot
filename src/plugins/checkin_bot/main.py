@@ -20,6 +20,7 @@ from .group_handler import GroupJoinHandler
 from .paper_handler import PaperSubmissionHandler
 from .verification_handler import QQVerificationHandler
 from .websocket_client import WebSocketClient
+from .welcome_handler import WelcomeMessageHandler
 
 __plugin_meta__ = PluginMetadata(
     name="CheckInBot",
@@ -32,6 +33,7 @@ _ws_client: Optional[WebSocketClient] = None
 _verification_handler: Optional[QQVerificationHandler] = None
 _paper_handler: Optional[PaperSubmissionHandler] = None
 _group_handler: Optional[GroupJoinHandler] = None
+_welcome_handler: Optional[WelcomeMessageHandler] = None
 _config = None
 
 
@@ -47,15 +49,17 @@ def get_config():
 
 def initialize_handlers():
     """Initialize all handler instances."""
-    global _ws_client, _verification_handler, _paper_handler, _group_handler, _config
+    global _ws_client, _verification_handler, _paper_handler, _group_handler, _welcome_handler, _config
 
     _config = load_config()
     _ws_client = WebSocketClient(_config)
     _verification_handler = QQVerificationHandler(_ws_client)
     _paper_handler = PaperSubmissionHandler(_ws_client)
+    _welcome_handler = WelcomeMessageHandler(_config.welcome_message)
     _group_handler = GroupJoinHandler(
         _ws_client, _verification_handler, _paper_handler,
-        set(_config.allowed_join_groups) if _config.allowed_join_groups else None
+        set(_config.allowed_join_groups) if _config.allowed_join_groups else None,
+        _welcome_handler
     )
 
     # Register WebSocket message handlers
