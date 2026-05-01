@@ -101,6 +101,7 @@ class GroupJoinHandler:
                 self.verification_handler.get_verify_message_id(qq) or "",
                 "success"
             )
+            self.paper_handler.clear_paper_data(qq)
         elif result == "failed":
             logger.info(f"Rejecting join for {qq}: verification failed")
             await self._reject_join(bot, flag, user_id)
@@ -109,8 +110,6 @@ class GroupJoinHandler:
                 self.verification_handler.get_verify_message_id(qq) or "",
                 "failed"
             )
-        else:
-            logger.info(f"No action for join {qq}: active verification exists but comment not matched yet")
 
     async def _handle_paper_join(
         self,
@@ -129,6 +128,7 @@ class GroupJoinHandler:
         if self.paper_handler.should_approve_join(rating_id):
             logger.info(f"Approving join for {qq}: rating {rating_id} allowed")
             await self._approve_join(bot, flag, user_id)
+            self.paper_handler.clear_paper_data(qq)
         elif self.paper_handler.should_reject_join(rating_id, answer_count, max_answer_count):
             logger.info(f"Rejecting join for {qq}: max attempts reached")
             await self._reject_join(bot, flag, user_id)

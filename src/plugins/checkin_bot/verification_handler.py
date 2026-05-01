@@ -135,6 +135,12 @@ class QQVerificationHandler:
             logger.info(f"Verification FAILED for QQ {qq}")
             return "failed"
 
+    def clear_active_verification(self, qq: str):
+        """Clear active verification for a QQ number."""
+        if qq in self._active_verifications:
+            del self._active_verifications[qq]
+            logger.debug(f"Cleared active verification for QQ {qq}")
+
     async def send_verify_response(
         self,
         qq: str,
