@@ -20,3 +20,8 @@ allowed_rating_ids: []
 
 # Group IDs allowed to process join requests (empty = allow all)
 allowed_join_groups: []
+
+# Welcome message settings for new group members
+welcome_message:
+  enabled: false  # Enable/disable welcome message feature
+  template: "欢迎新成员！试卷ID：{paper_id}，生成时间：{generate_time}，提交时间：{submit_time}，得分：{score}，答题次数：{answer_count}，耗时：{duration}"

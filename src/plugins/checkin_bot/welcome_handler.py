@@ -131,6 +131,7 @@ class WelcomeMessageHandler:
 
         try:
             message = self.config.template.format(**variables)
+            message = message.replace("\\n", "\n")
             logger.info(f"Generated welcome message for paper {paper_id}")
             return message
         except KeyError as e:
