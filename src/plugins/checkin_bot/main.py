@@ -11,7 +11,7 @@ from typing import Optional
 
 from loguru import logger
 from nonebot import get_bots, on_request, on_message, on_notice
-from nonebot.adapters.onebot.v11 import Bot, GroupRequestEvent, GroupDecreaseEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupRequestEvent, GroupDecreaseNoticeEvent
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from nonebot.plugin import PluginMetadata
 
@@ -204,7 +204,7 @@ group_decrease_matcher = on_notice(priority=5)
 
 
 @group_decrease_matcher.handle()
-async def handle_group_decrease(bot: Bot, event: GroupDecreaseEvent):
+async def handle_group_decrease(bot: Bot, event: GroupDecreaseNoticeEvent):
     """Handle group decrease events (member leaves or is kicked)."""
     if _leave_group_handler:
         await _leave_group_handler.handle_group_decrease(
