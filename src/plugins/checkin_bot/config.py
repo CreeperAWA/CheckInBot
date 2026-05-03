@@ -22,6 +22,11 @@ class WelcomeMessageConfig(BaseModel):
     template: str = "欢迎新成员！试卷ID：{paper_id}，生成时间：{generate_time}，提交时间：{submit_time}，得分：{score}，答题次数：{answer_count}，耗时：{duration}"
 
 
+class LeaveGroupInvalidateConfig(BaseModel):
+    """Configuration for auto-invalidating exam records when user leaves group."""
+    enabled: bool = False
+
+
 class BotConfig(BaseModel):
     """Main bot configuration."""
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -30,6 +35,7 @@ class BotConfig(BaseModel):
     allowed_rating_ids: List[str] = Field(default_factory=list)
     allowed_join_groups: List[int] = Field(default_factory=list)
     welcome_message: WelcomeMessageConfig = Field(default_factory=WelcomeMessageConfig)
+    leave_group_invalidate: LeaveGroupInvalidateConfig = Field(default_factory=LeaveGroupInvalidateConfig)
 
 
 def load_config(config_path: str = None) -> BotConfig:

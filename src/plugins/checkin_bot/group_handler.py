@@ -1,6 +1,5 @@
 """Group join request handler."""
 import asyncio
-import time
 from typing import Dict, Optional
 
 from loguru import logger
@@ -20,7 +19,7 @@ class PendingJoinRequest:
         self.user_id = user_id
         self.comment = comment
         self.flag = flag
-        self.timestamp = time.time()
+        self.timestamp = asyncio.get_event_loop().time()
         self.paper_data: Optional[Dict] = None
 
 
@@ -156,27 +155,66 @@ class GroupJoinHandler:
             pending = PendingJoinRequest(group_id, user_id, "", flag)
             self._pending_requests[qq] = pending
 
-            # Send exam records query
-            query_message = {
-                "type": "exam_records_query",
-                "messageId": str(int(time.time() * 1000)),
-                "data": {"qq": qq}
-            }
-            await self.ws_client.send_message(query_message)
-
-            # Cleanup after timeout
-            asyncio.create_task(self._cleanup_pending_request(qq))
+            # Query exam records using WebSocketClient's public method
+            asyncio.create_task(self._query_and_process_exam_records(qq, bot, flag, user_id))
 
             logger.info(f"Queried exam records for {qq}")
         except Exception as e:
             logger.error(f"Error querying exam records for {qq}: {e}")
             await self._reject_join(bot, flag, user_id)
 
+    async def _query_and_process_exam_records(
+        self,
+        qq: str,
+        bot: Bot,
+        flag: str,
+        user_id: int
+    ):
+        """Query exam records and process join decision."""
+        try:
+            records = await self.ws_client.query_exam_records(qq)
+
+            pending = self._pending_requests.pop(qq, None)
+            if not pending:
+                logger.debug(f"No pending join request for {qq}")
+                return
+
+            if not records:
+                logger.info(f"No exam records for {qq}, rejecting join")
+                await self._reject_join(bot, flag, user_id)
+                return
+
+            # Get most recent record
+            latest_record = records[0]
+            rating_id = latest_record.rating_id
+
+            logger.info(f"Latest record for {qq}: rating={rating_id}")
+
+            if self.paper_handler.should_approve_join(rating_id):
+                await self._approve_join(bot, flag, user_id)
+                paper_data_for_welcome = {
+                    "paper_id": latest_record.paper_id,
+                    "generate_time": latest_record.generate_time,
+                    "submit_time": latest_record.submit_time,
+                    "score": latest_record.score,
+                    "answer_count": 0,
+                    "rating_id": rating_id,
+                }
+                await self._send_welcome_if_enabled(bot, pending.group_id, paper_data_for_welcome)
+            else:
+                await self._reject_join(bot, flag, user_id)
+        except Exception as e:
+            logger.error(f"Error processing exam records for {qq}: {e}")
+            await self._reject_join(bot, flag, user_id)
+
     async def process_exam_records_response(self, data: dict):
         """Process exam records response from server."""
+        # Let WebSocketClient cache the records
+        self.ws_client.process_exam_records_response(data)
+
         query_data = data.get("data", {})
         qq = query_data.get("qq", "")
-        records = query_data.get("records", [])
+        records_data = query_data.get("records", [])
 
         pending = self._pending_requests.pop(qq, None)
         if not pending:
@@ -188,13 +226,13 @@ class GroupJoinHandler:
         user_id = pending.user_id
         group_id = pending.group_id
 
-        if not records:
+        if not records_data:
             logger.info(f"No exam records for {qq}, rejecting join")
             await self._reject_join(bot, flag, user_id)
             return
 
         # Get most recent record
-        latest_record = records[0]
+        latest_record = records_data[0]
         rating_id = latest_record.get("rating_id", "")
 
         logger.info(f"Latest record for {qq}: rating={rating_id}")

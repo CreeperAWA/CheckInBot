@@ -10,13 +10,14 @@ import asyncio
 from typing import Optional
 
 from loguru import logger
-from nonebot import get_bots, on_request, on_message
-from nonebot.adapters.onebot.v11 import Bot, GroupRequestEvent
+from nonebot import get_bots, on_request, on_message, on_notice
+from nonebot.adapters.onebot.v11 import Bot, GroupRequestEvent, GroupDecreaseEvent
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from nonebot.plugin import PluginMetadata
 
 from .config import load_config
 from .group_handler import GroupJoinHandler
+from .leave_group_handler import LeaveGroupInvalidateHandler
 from .paper_handler import PaperSubmissionHandler
 from .verification_handler import QQVerificationHandler
 from .websocket_client import WebSocketClient
@@ -34,6 +35,7 @@ _verification_handler: Optional[QQVerificationHandler] = None
 _paper_handler: Optional[PaperSubmissionHandler] = None
 _group_handler: Optional[GroupJoinHandler] = None
 _welcome_handler: Optional[WelcomeMessageHandler] = None
+_leave_group_handler: Optional[LeaveGroupInvalidateHandler] = None
 _config = None
 
 
@@ -49,13 +51,17 @@ def get_config():
 
 def initialize_handlers():
     """Initialize all handler instances."""
-    global _ws_client, _verification_handler, _paper_handler, _group_handler, _welcome_handler, _config
+    global _ws_client, _verification_handler, _paper_handler, _group_handler, _welcome_handler, _leave_group_handler, _config
 
     _config = load_config()
     _ws_client = WebSocketClient(_config)
     _verification_handler = QQVerificationHandler(_ws_client)
     _paper_handler = PaperSubmissionHandler(_ws_client)
     _welcome_handler = WelcomeMessageHandler(_config.welcome_message)
+    _leave_group_handler = LeaveGroupInvalidateHandler(
+        _ws_client,
+        enabled=_config.leave_group_invalidate.enabled
+    )
     _group_handler = GroupJoinHandler(
         _ws_client, _verification_handler, _paper_handler,
         set(_config.allowed_join_groups) if _config.allowed_join_groups else None,
@@ -191,3 +197,19 @@ async def handle_group_message(bot: Bot, event: GroupMessageEvent):
                     f"sent correct content"
                 )
                 _ws_client.remove_pending_verification(str(event.user_id))
+
+
+# Handle group decrease events (member leaves or is kicked)
+group_decrease_matcher = on_notice(priority=5)
+
+
+@group_decrease_matcher.handle()
+async def handle_group_decrease(bot: Bot, event: GroupDecreaseEvent):
+    """Handle group decrease events (member leaves or is kicked)."""
+    if _leave_group_handler:
+        await _leave_group_handler.handle_group_decrease(
+            bot,
+            event.group_id,
+            event.user_id,
+            event.sub_type
+        )

@@ -3,12 +3,35 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import websockets
 from loguru import logger
 
 from .config import BotConfig
+
+
+class ExamRecord:
+    """Represents an exam record."""
+
+    def __init__(self, paper_id: str, rating_id: str = "", score: str = "",
+                 generate_time: Optional[int] = None, submit_time: Optional[int] = None):
+        self.paper_id = paper_id
+        self.rating_id = rating_id
+        self.score = score
+        self.generate_time = generate_time
+        self.submit_time = submit_time
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExamRecord":
+        """Create ExamRecord from dict."""
+        return cls(
+            paper_id=data.get("paper_id", ""),
+            rating_id=data.get("rating_id", ""),
+            score=data.get("score", ""),
+            generate_time=data.get("generate_time"),
+            submit_time=data.get("submit_time")
+        )
 
 
 class WebSocketClient:
@@ -22,6 +45,8 @@ class WebSocketClient:
         self._reconnect_delay = 5
         self._max_reconnect_delay = 300
         self._pending_verifications: Dict[str, dict] = {}
+        self._pending_exam_queries: Dict[str, asyncio.Event] = {}
+        self._exam_records_cache: Dict[str, List[ExamRecord]] = {}
 
     def register_handler(self, message_type: str, handler: Callable):
         """Register a handler for a specific message type."""
@@ -172,3 +197,87 @@ class WebSocketClient:
         if not self.config.allowed_rating_ids:
             return False
         return rating_id in self.config.allowed_rating_ids
+
+    async def query_exam_records(self, qq: str, timeout: float = 10.0) -> List[ExamRecord]:
+        """Query exam records for a user.
+
+        Args:
+            qq: QQ number to query.
+            timeout: Timeout in seconds for waiting response.
+
+        Returns:
+            List of ExamRecord objects, empty list if no records or timeout.
+        """
+        query_message = {
+            "type": "exam_records_query",
+            "messageId": str(uuid.uuid4()),
+            "data": {"qq": qq}
+        }
+
+        event = asyncio.Event()
+        self._pending_exam_queries[qq] = event
+
+        try:
+            await self.send_message(query_message)
+            logger.info(f"Queried exam records for {qq}")
+
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+
+            records = self._exam_records_cache.pop(qq, [])
+            return records
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout waiting for exam records response for {qq}")
+            return []
+        finally:
+            self._pending_exam_queries.pop(qq, None)
+
+    async def invalidate_exam_records(self, qq: str, paper_ids: List[str]) -> bool:
+        """Invalidate exam records for a user.
+
+        Args:
+            qq: QQ number whose records to invalidate.
+            paper_ids: List of paper IDs to invalidate.
+
+        Returns:
+            True if request was sent successfully, False otherwise.
+        """
+        if not paper_ids:
+            return False
+
+        invalidate_message = {
+            "type": "exam_invalidate_request",
+            "messageId": str(uuid.uuid4()),
+            "data": {"paper_ids": paper_ids}
+        }
+
+        try:
+            await self.send_message(invalidate_message)
+            logger.info(
+                f"Sent invalidate request for {len(paper_ids)} "
+                f"exam records of user {qq}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send invalidate request for {qq}: {e}")
+            return False
+
+    def process_exam_records_response(self, data: dict) -> None:
+        """Process exam records response from server.
+
+        This method caches the exam records and signals waiting queries.
+
+        Args:
+            data: The response data from server.
+        """
+        query_data = data.get("data", {})
+        qq = query_data.get("qq", "")
+        records_data = query_data.get("records", [])
+
+        records = [ExamRecord.from_dict(r) for r in records_data]
+        self._exam_records_cache[qq] = records
+
+        event = self._pending_exam_queries.get(qq)
+        if event:
+            event.set()
+
+        logger.info(f"Cached {len(records)} exam records for user {qq}")

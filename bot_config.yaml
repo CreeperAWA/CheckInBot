@@ -25,3 +25,7 @@ allowed_join_groups: []
 welcome_message:
   enabled: false  # Enable/disable welcome message feature
   template: "欢迎新成员！试卷ID：{paper_id}，生成时间：{generate_time}，提交时间：{submit_time}，得分：{score}，答题次数：{answer_count}，耗时：{duration}"
+
+# Auto-invalidate exam records when user leaves group
+leave_group_invalidate:
+  enabled: false
