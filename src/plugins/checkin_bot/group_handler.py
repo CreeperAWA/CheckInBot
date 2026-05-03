@@ -1,5 +1,6 @@
 """Group join request handler."""
 import asyncio
+import time
 from typing import Dict, Optional
 
 from loguru import logger
@@ -10,16 +11,18 @@ from .verification_handler import QQVerificationHandler
 from .websocket_client import WebSocketClient
 from .welcome_handler import WelcomeMessageHandler
 
+PENDING_REQUEST_EXPIRE_SECONDS = 14 * 24 * 60 * 60  # 14 days
+
 
 class PendingJoinRequest:
     """Stores a pending group join request."""
 
-    def __init__(self, group_id: int, user_id: int, comment: str, flag: str = ""):
+    def __init__(self, group_id: int, user_id: int, bot: Bot, flag: str = ""):
         self.group_id = group_id
         self.user_id = user_id
-        self.comment = comment
+        self.bot = bot
         self.flag = flag
-        self.timestamp = asyncio.get_event_loop().time()
+        self.created_at = time.time()
         self.paper_data: Optional[Dict] = None
 
 
@@ -56,7 +59,8 @@ class GroupJoinHandler:
         2. Check if active verification exists for this QQ
            - If yes, verify comment against verify_content
            - Send success/failed response to server
-           - Approve or reject based on verification result
+           - If success, store as pending and wait for exam result notification
+           - If failed, reject immediately
         3. If no active verification, check if paper submission data exists
            - If yes, use rating_id to determine action
         4. If neither, query server for user records to check rating
@@ -80,7 +84,7 @@ class GroupJoinHandler:
             await self._handle_paper_join(bot, group_id, user_id, qq, paper_data, flag)
             return
 
-        # Step 3: Query server for user records
+        # Step 3: Query server for user records and decide immediately
         await self._handle_query_join(bot, group_id, user_id, qq, flag)
 
     async def _handle_verification_join(
@@ -96,17 +100,15 @@ class GroupJoinHandler:
         result = await self.verification_handler.check_join_request(bot, qq, comment)
 
         if result == "success":
-            logger.info(f"Approving join for {qq}: verification passed")
-            await self._approve_join(bot, flag, user_id)
+            logger.info(f"Verification passed for {qq}, waiting for exam result")
+            pending = PendingJoinRequest(group_id, user_id, bot, flag)
+            self._pending_requests[qq] = pending
             await self.verification_handler.send_verify_response(
                 qq,
                 self.verification_handler.get_verify_message_id(qq) or "",
                 "success"
             )
-            paper_data = self.paper_handler.get_paper_data(qq)
-            if paper_data:
-                await self._send_welcome_if_enabled(bot, group_id, paper_data)
-            self.paper_handler.clear_paper_data(qq)
+            asyncio.create_task(self._cleanup_expired_pending_request(qq))
         elif result == "failed":
             logger.info(f"Rejecting join for {qq}: verification failed")
             await self._reject_join(bot, flag, user_id)
@@ -151,11 +153,9 @@ class GroupJoinHandler:
     ):
         """Handle join by querying server for user records."""
         try:
-            # Store pending request
-            pending = PendingJoinRequest(group_id, user_id, "", flag)
+            pending = PendingJoinRequest(group_id, user_id, bot, flag)
             self._pending_requests[qq] = pending
 
-            # Query exam records using WebSocketClient's public method
             asyncio.create_task(self._query_and_process_exam_records(qq, bot, flag, user_id))
 
             logger.info(f"Queried exam records for {qq}")
@@ -277,12 +277,42 @@ class GroupJoinHandler:
         except Exception as e:
             logger.error(f"Failed to reject join for {user_id}: {e}")
 
-    def update_paper_submission(self, paper_data: dict):
+    async def update_paper_submission(self, paper_data: dict, bot: Optional[Bot] = None):
         """Update paper submission data for future join decisions."""
         qq = paper_data.get("qq", "")
         if qq:
             self.paper_handler.set_paper_data(qq, paper_data)
             logger.info(f"Updated paper submission data for {qq}")
+            await self._process_pending_join_for_paper_submit(qq, paper_data, bot)
+
+    async def _process_pending_join_for_paper_submit(
+        self,
+        qq: str,
+        paper_data: dict,
+        bot: Optional[Bot] = None
+    ):
+        """Process pending join request when paper submit notification arrives."""
+        pending = self._pending_requests.get(qq)
+        if not pending:
+            logger.debug(f"No pending join request for {qq}")
+            return
+
+        rating_id = paper_data.get("rating_id", "")
+        answer_count = paper_data.get("answer_count", 0)
+        max_answer_count = paper_data.get("max_answer_count", 0)
+
+        if self.paper_handler.should_approve_join(rating_id):
+            self._pending_requests.pop(qq, None)
+            logger.info(f"Approving join for {qq}: exam passed with rating {rating_id}")
+            await self._approve_join(pending.bot, pending.flag, pending.user_id)
+            await self._send_welcome_if_enabled(pending.bot, pending.group_id, paper_data)
+            self.paper_handler.clear_paper_data(qq)
+        elif self.paper_handler.should_reject_join(rating_id, answer_count, max_answer_count):
+            self._pending_requests.pop(qq, None)
+            logger.info(f"Rejecting join for {qq}: max attempts reached")
+            await self._reject_join(pending.bot, pending.flag, pending.user_id)
+        else:
+            logger.info(f"No action for join {qq}: waiting for more attempts")
 
     async def _send_welcome_if_enabled(
         self,
@@ -298,9 +328,10 @@ class GroupJoinHandler:
         except Exception as e:
             logger.error(f"Error sending welcome message: {e}")
 
-    async def _cleanup_pending_request(self, qq: str):
-        """Clean up pending join request after timeout."""
-        await asyncio.sleep(30)
-        if qq in self._pending_requests:
-            del self._pending_requests[qq]
-            logger.debug(f"Cleaned up pending join request for {qq}")
+    async def _cleanup_expired_pending_request(self, qq: str):
+        """Clean up pending join request after 14 days if not approved."""
+        await asyncio.sleep(PENDING_REQUEST_EXPIRE_SECONDS)
+        pending = self._pending_requests.pop(qq, None)
+        if pending:
+            logger.info(f"Pending request for {qq} expired after 14 days, rejecting join")
+            await self._reject_join(pending.bot, pending.flag, pending.user_id)

@@ -108,10 +108,11 @@ async def _handle_verify_request(data: dict):
 
 async def _handle_paper_submit(data: dict):
     """Handle paper submission notification from server."""
+    bot = _get_bot()
     if _paper_handler and _group_handler:
         action = await _paper_handler.handle_paper_submit(data)
         if action:
-            _group_handler.update_paper_submission(data.get("data", {}))
+            await _group_handler.update_paper_submission(data.get("data", {}), bot)
 
 
 async def _handle_exam_records(data: dict):
